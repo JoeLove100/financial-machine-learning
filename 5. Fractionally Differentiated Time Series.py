@@ -177,7 +177,7 @@ fig.set_size_inches(15, 5)
 # For a more realistic example, we can take a look at S&P daily returns. Here, we will apply a fixed-width window as suggested by M. Lopez de Prado rather than the expanding window that we have used above.
 
 # %%
-s_and_p = pd.read_csv("spx.csv", index_col=0)
+s_and_p = pd.read_csv("raw_data/spx.csv", index_col=0)
 s_and_p.columns = ["S&P 500"]
 s_and_p = s_and_p.fillna(method="ffill")
 s_and_p.plot(kind="line")

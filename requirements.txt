@@ -4,3 +4,8 @@ sklearn
 jupyter
 matplotlib
 statsmodels
+scipy
+seaborn
+dataclasses==0.7;python_version<"3.7"
+cardano-sdk-market-data
+eli5

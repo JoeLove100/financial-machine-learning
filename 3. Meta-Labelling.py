@@ -35,7 +35,7 @@ from sklearn.ensemble import RandomForestClassifier
 np.random.seed(2020)
 
 # %%
-close_data = pd.read_csv("spx.csv", index_col=0)
+close_data = pd.read_csv("raw_data/spx.csv", index_col=0)
 close_data.index = pd.to_datetime(close_data.index)
 close_data["PX_LAST"] = close_data["PX_LAST"].ffill()
 close_data["50DMA"] = close_data["PX_LAST"].rolling(50).mean()
