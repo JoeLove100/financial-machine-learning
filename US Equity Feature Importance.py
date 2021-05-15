@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.10.3
+#       jupytext_version: 1.11.2
 #   kernelspec:
 #     display_name: machine-learning
 #     language: python
@@ -17,7 +17,16 @@
 # # US Equity Feature Importance
 
 # %% [markdown]
-# The aim of this notebook is to carry out some feature importance analysis on the suite of indicators that we currently track as part of our US equity scorecard. The ideas herein are largely taken from the book "*Advances in Financial Machine Learning*" by Marcos Lopez de Prado.
+# The aim of this notebook is to explore some methods for feature importance - these can help to ascertain which variables are the most important to pay attention to, increase the transparency of the predictions made by machine learning models and help to remove extraneous variables from consideration. There are three main approaches available to us:
+#
+# 1) **Use explainable models** - so called "white-box" models are models simple enough that their output can be explained in terms of the input features solely by inspection of their coefficients and structure. Examples of this would be logistic regression models or single decision trees. Clearly, the downside here is that these models cannot capture highly non-linear relationships well, and may not be able to properly exploit very large datasets. However, the trade off may be worth it in situations where we have relatively small data sets and a limited number of predictive variables
+#
+# 2) **Alterations to input data** - sometimes, we can observe the impact on a fitted model's predictive power by altering our input variables. This allows us to see how reliant a model is on each variable, potentially in its out-of-sample predictions.
+#
+# 3) **Local model approximations** - more modern techniques like LIME and SHAP seek to fit "white-box" local approximations to more complicated models. This allows us to see what is driving the predictions made by our models at different points in our feature space. This is a more complex approach, and cannot provide global insights, but it allows us to work with more complicated models which may be able to better represent the highly non-linear relationships present in financial markets.
+#
+#
+# The ideas herein lean heavily on material from the book "*Advances in Financial Machine Learning*" by Marcos Lopez de Prado.
 
 # %% [markdown]
 # ## Setting up
@@ -28,6 +37,7 @@
 # %%
 # do imports
 
+import random
 import numpy as np
 import pandas as pd
 import seaborn as sns
@@ -43,6 +53,8 @@ get_permutation_importance_in_sample
 from finance_ml.cross_validation import get_purged_crossvalidation_score
 from finance_ml.hp_tuning import fit_hyper_parameters
 from finance_ml.cross_validation import PurgedKFold
+import shap
+import xgboost
 
 plt.style.use("cardano")
 
@@ -157,7 +169,7 @@ fig.tight_layout()
 #
 # 2) interrogate the model to find out why it made certain predictions, or how its performance changes as a particular feature is changed
 #
-# Clearly, this requires us to fit a suitable model. In this notebook, I have tried four different models: a logistic regression model, support vector machine, neural network with a single hidden layer and a random forest classifier. 
+# Clearly, this requires us to fit a suitable model. In this notebook, I have tried five different models: a logistic regression model, support vector machine, neural network with a single hidden layer, a random forest classifier and a gradient boosting tree model classifier. 
 
 # %% [markdown]
 # ### How can we fit a model to our data?
@@ -191,8 +203,6 @@ log_reg_cv = get_purged_crossvalidation_score(log_reg_model, features, target, c
 # %%
 # support vector machine
 
-scoring_method = "roc_auc"
-splits = 8
 pipe = Pipeline([("scaler", StandardScaler()), ("classifier", SVC())])
 grid = {"classifier__C": [1e-2, 1e-1, 1, 10], 
         "classifier__kernel": ["rbf", "poly", "sigmoid"], 
@@ -205,8 +215,6 @@ svm_cv = get_purged_crossvalidation_score(svm_model, features, target, cv, scori
 # %%
 # neural network
 
-scoring_method = "roc_auc"
-splits = 8
 pipe = Pipeline([("scaler", StandardScaler()), ("classifier", MLPClassifier())])
 grid = {"classifier__hidden_layer_sizes": [32, 64, 128], 
         "classifier__activation": ["tanh", "relu"], 
@@ -220,8 +228,6 @@ neural_net_cv = get_purged_crossvalidation_score(neural_net_model, features, tar
 # %%
 # random forest
 
-scoring_method = "roc_auc"
-splits = 8
 pipe = Pipeline([("scaler", StandardScaler()), ("classifier", RandomForestClassifier())])
 grid = {"classifier__n_estimators": [50, 100, 200], 
         "classifier__max_depth": [3, 6, 9, None], 
@@ -231,6 +237,18 @@ rf_model = fit_hyper_parameters(features, target, periods, pipe, grid, n_splits=
 cv = PurgedKFold(periods, n_splits=splits, pct_embargo=0.1)
 rf_cv = get_purged_crossvalidation_score(rf_model, features, target, cv, scoring_method=scoring_method)
 
+# %%
+# gradient boosting 
+
+pipe = Pipeline([("scaler", StandardScaler()), ("classifier", xgboost.XGBClassifier(use_label_encoder=False,
+                                                                                    eval_metric="auc"))])
+grid = {"classifier__gamma": [0, 0.1, 0.2, 0.3],
+        "classifier__reg_alpha": [0, 1, 5],
+        "classifier__reg_lambda": [0, 1, 5]}
+xgb_model = fit_hyper_parameters(features, target, periods, pipe, grid, n_splits=splits, scoring=scoring_method)
+cv = PurgedKFold(periods, n_splits=splits, pct_embargo=0.1)
+xgb_cv = get_purged_crossvalidation_score(xgb_model, features, target, cv, scoring_method=scoring_method)
+
 # %% [markdown]
 # ### How do our models perform?
 
@@ -238,8 +256,9 @@ rf_cv = get_purged_crossvalidation_score(rf_model, features, target, cv, scoring
 # The results for the best model selected by our hyperparameter optimisation are show below, first each test period in isolation, then an average across all 8 time periods.  
 
 # %%
-all_cv = pd.concat([log_reg_cv, svm_cv, neural_net_cv, rf_cv], axis=1, 
-                   keys=["Logistic Regression", "Support Vector Machine", "Neural Network", "Random Forest"])
+all_cv = pd.concat([log_reg_cv, svm_cv, neural_net_cv, rf_cv, xgb_cv], axis=1, 
+                   keys=["Logistic Regression", "Support Vector Machine", "Neural Network", 
+                         "Random Forest", "Gradient Boosting Trees"])
 
 all_cv
 
@@ -303,11 +322,22 @@ fig.set_size_inches(15, 5);
 # A more subtle issue with both MDI and MDA is that they suffer from "substitution effects" - if we have two closely related inputs then both will (misleadingly) appear redundant. To complement the above analysis, we would ideally supplement our analysis with some single-feature models. However, performance for such models is extremely poor (due to the reasons discussed earlier in the paper) and so I have not included this analysis.
 
 # %% [markdown]
-# ### TreeSHAP
+# ### SHAP
 
 # %% [markdown]
 # The final idea presented here is taken from [this](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=3788037) paper. Shapley values are an idea from game theory, which aim to proportion the payoff of a game amongst its contributors. Here, we the "payoff" is the deviation of the predicted probability from our "average prediction" - by attempting to attribute this across our features, we can attempt to understand what is driving our models predictions.  Note that unlike "global" methods like MDI and MDA, this primarily aims to understand local behaviour of the model at different points.
 #
-# The way the method works is (broadly) that, for a given feature, we try to measure the impact of adding this feature to every other possible subgroup of features. Clearly, this is extremely computationally intensive, so in practice we restrict ourselves to a smaller class of model and then devise optimizations based on this limited class of models. TreeSHAP is one such approach, which restricts us to tree based models.
+# The way the method works is (broadly) that, for a given feature, we try to measure the impact of adding this feature to every other possible subgroup of features. Clearly, this is extremely computationally intensive, so in practice we restrict ourselves to a smaller class of model and then devise optimizations based on this limited class of models. TreeSHAP is one such approach, which restricts us to tree based models.  Happily this is implemented in the python SHAP package.
 
 # %%
+# get shap values
+
+explainer = shap.TreeExplainer(xgb_model["classifier"])
+shap_values = explainer(pd.DataFrame(rf_model["scaler"].transform(features), columns=features.columns))
+
+# %%
+
+rnd = random.randint(0, shap_values.shape[0] - 1) 
+shap.plots.waterfall(shap_values[rnd])
+date, actual_val = features.index[rnd], target.iloc[rnd]
+print(f"SHAP plot for {date.date()}, actual value was {actual_val}")

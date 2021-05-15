@@ -9,3 +9,4 @@ seaborn
 dataclasses==0.7;python_version<"3.7"
 cardano-sdk-market-data
 eli5
+shap
